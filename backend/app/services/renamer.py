@@ -1,3 +1,9 @@
+"""Normalized file naming for classified documents.
+
+Generates filenames in the format ``[TransportID]_[DocType].pdf``,
+with a numeric suffix for duplicate types (e.g., multiple invoices).
+"""
+
 import re
 
 from app.models.document import DOCUMENT_FILE_NAMES

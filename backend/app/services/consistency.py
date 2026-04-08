@@ -1,3 +1,10 @@
+"""Cross-document consistency validation.
+
+Compares extracted data across all documents in a batch to verify they
+belong to the same shipment: matching transport IDs, container numbers,
+and presence of required document types.
+"""
+
 import logging
 
 from app.models.document import (

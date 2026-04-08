@@ -18,11 +18,28 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     job_ttl_hours: int = 24
 
+    # LLM provider: "anthropic", "openai", "google", or "nanonets"
+    llm_provider: Literal["anthropic", "openai", "google", "nanonets"] = "anthropic"
+
     # Claude model for classification/extraction
     claude_model: str = "claude-sonnet-4-20250514"
 
-    # OCR provider for scanned pages: "mistral" or "textract"
-    ocr_provider: Literal["mistral", "textract"] = "textract"
+    # OpenAI
+    openai_api_key: str = ""
+    openai_model: str = "gpt-5.4"
+
+    # Google Gemini
+    google_api_key: str = ""
+    google_model: str = "gemini-3.1-pro"
+
+    # Nanonets OCR2+
+    nanonets_api_key: str = ""
+    nanonets_api_url: str = "https://extraction-api.nanonets.com/extract"
+
+    # OCR provider for scanned pages
+    ocr_provider: Literal[
+        "textract", "mistral", "openai", "google", "nanonets"
+    ] = "textract"
 
     # Local development: save output files to this directory instead of S3
     local_output_dir: str = ""

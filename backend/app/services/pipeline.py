@@ -1,20 +1,32 @@
+"""Document processing pipeline.
+
+Orchestrates OCR -> classify -> extract -> validate -> rename -> ZIP.
+This function is transport-agnostic (ports & adapters): it accepts PDFs
+as bytes and returns a report + ZIP. The caller handles I/O.
+"""
+
 import logging
 from collections import Counter
 from collections.abc import Callable
 
 from app.models.document import DocumentType
 from app.models.schemas import (
+    AnalyzedSegment,
     ClassifiedDocument,
     DocumentSegment,
     JobInput,
     JobResult,
     JobStage,
 )
+from app.services.analyzer import (
+    classify_and_extract,
+    use_vision_path,
+    vision_classify_and_extract,
+)
 from app.services.archiver import create_zip
-from app.services.classifier import classify_and_split
 from app.services.consistency import check_consistency
-from app.services.extractor import extract_data
 from app.services.ocr import extract_text_from_pdf
+from app.services.post_validate import validate_extracted_data
 from app.services.renamer import generate_filename
 from app.services.reporter import generate_report
 from app.services.splitter import split_pdf
@@ -39,54 +51,88 @@ def process_job(
         if on_progress:
             on_progress(stage, pct, detail)
 
-    all_classified: list[ClassifiedDocument] = []
-    all_split_pdf_bytes: list[bytes] = []  # parallel to all_classified
-    renamed_files: dict[str, bytes] = {}  # renamed_filename -> pdf bytes
-    rename_map: dict[str, str] = {}  # source_filename -> renamed_filename
+    vision = use_vision_path()
+    if vision:
+        logger.info("Using vision path (OCR + classify + extract in one call)")
 
-    # --- Stage 1: OCR + Split + Classify each input PDF ---
+    all_classified: list[ClassifiedDocument] = []
+    all_split_pdf_bytes: list[bytes] = []
+    renamed_files: dict[str, bytes] = {}
+    rename_map: dict[str, str] = {}
+
     for i, pdf in enumerate(job_input.pdfs):
         file_progress = i / len(job_input.pdfs)
 
-        # Extract text
-        _progress(JobStage.EXTRACTING_TEXT, file_progress, f"Procesando {pdf.filename}")
-        pages = extract_text_from_pdf(pdf.content, job_id=job_input.job_id, filename=pdf.filename)
-        logger.info("Extracted text from %d pages of %s", len(pages), pdf.filename)
+        # --- PyMuPDF text extraction (always runs — free and fast) ---
+        _progress(
+            JobStage.EXTRACTING_TEXT, file_progress, f"Procesando {pdf.filename}"
+        )
+        pages = extract_text_from_pdf(
+            pdf.content,
+            job_id=job_input.job_id,
+            filename=pdf.filename,
+            skip_ocr=vision,  # skip external OCR when using vision path
+        )
+        logger.info(
+            "Extracted text from %d pages of %s", len(pages), pdf.filename
+        )
 
-        # Classify and detect document boundaries
-        _progress(JobStage.CLASSIFYING, file_progress, f"Clasificando {pdf.filename}")
-        segments = classify_and_split(pages)
+        # --- Classify + Extract (single LLM call) ---
+        _progress(
+            JobStage.CLASSIFYING, file_progress, f"Analizando {pdf.filename}"
+        )
 
-        if not segments:
-            segments = [
-                DocumentSegment(
+        if vision:
+            analyzed = vision_classify_and_extract(pdf.content, pages)
+        else:
+            analyzed = classify_and_extract(pages)
+
+        if not analyzed:
+            analyzed = [
+                AnalyzedSegment(
                     start_page=0,
                     end_page=len(pages) - 1,
                     doc_type=DocumentType.OTHER,
                     confidence=0.0,
+                    extracted_data=_empty_extracted_data(),
                 )
             ]
 
-        # Split PDF into individual documents (done once, reused for packaging)
-        _progress(JobStage.SPLITTING, file_progress, f"Separando {pdf.filename}")
+        # Report EXTRACTING_DATA as done (folded into the classify call)
+        _progress(
+            JobStage.EXTRACTING_DATA,
+            file_progress,
+            f"Datos extraídos de {pdf.filename}",
+        )
+
+        # --- Split PDF ---
+        _progress(
+            JobStage.SPLITTING, file_progress, f"Separando {pdf.filename}"
+        )
+        segments = [
+            DocumentSegment(
+                start_page=a.start_page,
+                end_page=a.end_page,
+                doc_type=a.doc_type,
+                confidence=a.confidence,
+            )
+            for a in analyzed
+        ]
         split_pdfs = split_pdf(pdf.content, segments)
 
-        # Extract data from each segment
-        _progress(JobStage.EXTRACTING_DATA, file_progress, f"Extrayendo datos de {pdf.filename}")
-        for seg, seg_pdf_bytes in zip(segments, split_pdfs):
+        # --- Build ClassifiedDocuments ---
+        for seg, seg_pdf_bytes in zip(analyzed, split_pdfs):
             seg_pages = pages[seg.start_page : seg.end_page + 1]
-            extracted = extract_data(seg_pages, seg.doc_type)
-
             source_name = (
                 f"{pdf.filename}[p{seg.start_page + 1}-{seg.end_page + 1}]"
-                if len(segments) > 1
+                if len(analyzed) > 1
                 else pdf.filename
             )
 
             classified = ClassifiedDocument(
                 doc_type=seg.doc_type,
                 confidence=seg.confidence,
-                extracted_data=extracted,
+                extracted_data=seg.extracted_data,
                 source_filename=source_name,
                 start_page=seg.start_page,
                 end_page=seg.end_page,
@@ -95,11 +141,16 @@ def process_job(
             all_classified.append(classified)
             all_split_pdf_bytes.append(seg_pdf_bytes)
 
-    # --- Stage 2: Consistency check ---
-    _progress(JobStage.VALIDATING, 0.8, "Validando consistencia")
-    alerts = check_consistency(all_classified)
+    # --- Post-LLM validation against PyMuPDF raw text ---
+    _progress(JobStage.VALIDATING, 0.75, "Verificando datos contra texto PDF")
+    validation_alerts = validate_extracted_data(all_classified)
 
-    # --- Stage 3: Rename and package ---
+    # --- Consistency check ---
+    _progress(JobStage.VALIDATING, 0.85, "Validando consistencia")
+    consistency_alerts = check_consistency(all_classified)
+    alerts = validation_alerts + consistency_alerts
+
+    # --- Rename and package ---
     _progress(JobStage.PACKAGING, 0.9, "Empaquetando archivos")
 
     primary_transport_id = _find_primary_transport_id(all_classified)
@@ -112,10 +163,8 @@ def process_job(
         renamed_files[new_name] = pdf_bytes
         rename_map[doc.source_filename] = new_name
 
-    # Create ZIP
     zip_bytes = create_zip(renamed_files)
 
-    # Generate report
     report = generate_report(
         job_id=job_input.job_id,
         total_files_ingested=len(job_input.pdfs),
@@ -128,9 +177,17 @@ def process_job(
     return JobResult(report=report, zip_bytes=zip_bytes)
 
 
-def _find_primary_transport_id(documents: list[ClassifiedDocument]) -> str | None:
+def _find_primary_transport_id(
+    documents: list[ClassifiedDocument],
+) -> str | None:
     for doc in documents:
         if doc.doc_type == DocumentType.TRANSPORT_DOCUMENT:
             if doc.extracted_data.transport_ids:
                 return doc.extracted_data.transport_ids[0]
     return None
+
+
+def _empty_extracted_data():
+    from app.models.schemas import ExtractedData
+
+    return ExtractedData()

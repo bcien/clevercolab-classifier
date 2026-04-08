@@ -1,3 +1,9 @@
+"""PDF splitting by page ranges.
+
+Takes the original PDF bytes and a list of document segments (start/end
+pages), and produces separate PDF byte streams for each segment.
+"""
+
 import io
 
 import fitz

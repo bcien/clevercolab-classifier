@@ -9,7 +9,7 @@ Step-by-step instructions for deploying Clevercolab Classifier on AWS.
 - Node.js 20+ and npm
 - Python 3.12+
 - A GitHub repository with this project pushed
-- API keys: Anthropic (required), Mistral (optional, only if `OCR_PROVIDER=mistral`)
+- API keys: At least one LLM provider key (Anthropic, OpenAI, Google, or Nanonets). Optional: Mistral (if `OCR_PROVIDER=mistral`).
 
 ---
 
@@ -129,6 +129,24 @@ aws sqs set-queue-attributes --queue-url $QUEUE_URL \
 aws secretsmanager create-secret \
   --name clevercolab/anthropic-api-key \
   --secret-string "sk-ant-your-key-here" \
+  --region $AWS_REGION
+
+# Only if using OpenAI as LLM or OCR provider
+aws secretsmanager create-secret \
+  --name clevercolab/openai-api-key \
+  --secret-string "sk-your-key-here" \
+  --region $AWS_REGION
+
+# Only if using Google Gemini as LLM or OCR provider
+aws secretsmanager create-secret \
+  --name clevercolab/google-api-key \
+  --secret-string "your-google-key-here" \
+  --region $AWS_REGION
+
+# Only if using Nanonets as LLM or OCR provider
+aws secretsmanager create-secret \
+  --name clevercolab/nanonets-api-key \
+  --secret-string "your-nanonets-key-here" \
   --region $AWS_REGION
 
 # Only if using Mistral OCR
@@ -252,6 +270,7 @@ aws lambda create-function \
     S3_OUTPUT_BUCKET=clevercolab-output,
     S3_OCR_RESULTS_BUCKET=clevercolab-ocr-results,
     DYNAMODB_TABLE=clevercolab-jobs,
+    LLM_PROVIDER=anthropic,
     OCR_PROVIDER=textract,
     ANTHROPIC_SECRET_NAME=clevercolab/anthropic-api-key
   }" \
@@ -524,8 +543,7 @@ Assumes **low-medium usage**: ~500 document batches/month, ~10 pages average per
 | **Lambda (processing)** | $0.0000167/GB-s | **$5–15** | 4 GB memory × ~15s avg = 60 GB-s per invocation. 500 invocations = 30,000 GB-s. At $0.0000167/GB-s = ~$0.50. But cold starts + retries push real cost to $5–15. Free tier: 400,000 GB-s/month. |
 | **AWS Textract OCR** | $1.50 / 1,000 pages | **$1.50** | Only scanned pages (~20% of 5,000 pages = 1,000 pages). Text-layer PDFs use PyMuPDF (free). |
 | **Mistral OCR** (if used instead) | $2.00 / 1,000 pages | **$2.00** | Alternative to Textract. Set via `OCR_PROVIDER` env var. |
-| **Claude API (classification)** | ~$0.003/1K input + $0.015/1K output tokens | **$3–5** | 1 classify call per PDF (~2K input tokens, ~500 output tokens). 500 calls ≈ 1M input + 250K output tokens. |
-| **Claude API (extraction)** | Same token pricing | **$5–10** | 1 extract call per *document segment* (avg ~2 segments per PDF = 1,000 calls). Smaller prompts than classification. |
+| **LLM API (classify+extract)** | ~$0.003/1K input + $0.015/1K output tokens | **$5–10** | 1 combined classify+extract call per PDF (~3K input tokens, ~800 output tokens). 500 calls ≈ 1.5M input + 400K output tokens. Previously required separate calls; merged into one. |
 | **SQS** | $0.40 / 1M requests | < $0.01 | Negligible at this volume. 1M requests/month free tier. |
 | **Secrets Manager** | $0.40/secret/month + $0.05/10K API calls | ~$1 | 2 secrets (Anthropic + optional Mistral). Cached in Lambda memory between invocations. |
 

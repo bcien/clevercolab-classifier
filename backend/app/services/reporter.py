@@ -1,3 +1,11 @@
+"""Summary report generation for a processed document batch.
+
+Builds a ``Report`` from classified documents, the rename map, and
+any alerts (validation + consistency). Computes missing required
+document types from the set of found types.
+"""
+
+from app.models.document import REQUIRED_DOCUMENT_TYPES
 from app.models.schemas import (
     Alert,
     ClassifiedDocument,
@@ -25,16 +33,15 @@ def generate_report(
         for doc in documents
     ]
 
-    missing_labels = [
-        alert.message.removeprefix("Documento faltante: ")
-        for alert in alerts
-        if alert.message.startswith("Documento faltante:")
+    found_types = {doc.doc_type for doc in documents}
+    missing = [
+        dt.value for dt in REQUIRED_DOCUMENT_TYPES if dt not in found_types
     ]
 
     return Report(
         job_id=job_id,
         total_files_ingested=total_files_ingested,
         documents_found=found,
-        missing_types=missing_labels,
+        missing_types=missing,
         alerts=alerts,
     )

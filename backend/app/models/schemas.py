@@ -39,6 +39,19 @@ class ExtractedData(BaseModel):
     port_of_discharge: str | None = None
 
 
+# --- Analyzed Segment (combined classify + extract result) ---
+
+
+class AnalyzedSegment(BaseModel):
+    """Result of the combined classify+extract LLM call for one document segment."""
+
+    start_page: int
+    end_page: int
+    doc_type: DocumentType
+    confidence: float
+    extracted_data: ExtractedData
+
+
 # --- Classified Document (after full processing of one segment) ---
 
 

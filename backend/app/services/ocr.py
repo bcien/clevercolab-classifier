@@ -19,8 +19,18 @@ def extract_text_from_pdf(
     pdf_bytes: bytes,
     job_id: str | None = None,
     filename: str | None = None,
+    skip_ocr: bool = False,
 ) -> list[PageText]:
-    """Extract text from all pages using PyMuPDF, falling back to configured OCR provider."""
+    """Extract text from all pages using PyMuPDF, falling back to configured OCR provider.
+
+    Args:
+        pdf_bytes: Raw PDF file content.
+        job_id: Job identifier (used for persisting OCR results).
+        filename: Original filename (for logging and result storage).
+        skip_ocr: If True, only run PyMuPDF and mark scanned pages as
+            ``used_ocr=True`` without calling an external OCR provider.
+            Used by the vision pipeline which handles OCR in the LLM call.
+    """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     pages: list[PageText] = []
     ocr_needed: list[int] = []
@@ -33,15 +43,18 @@ def extract_text_from_pdf(
             pages.append(PageText(page_num=page.number, text="", used_ocr=True))
             ocr_needed.append(page.number)
 
-    if ocr_needed:
+    if ocr_needed and not skip_ocr:
         provider = settings.ocr_provider
         logger.info(
             "Pages %s need OCR, using %s for %s", ocr_needed, provider, filename or "unknown"
         )
-        if provider == "textract":
-            _ocr_pages_textract(doc, pages, ocr_needed)
-        else:
-            _ocr_pages_mistral(doc, pages, ocr_needed)
+        _OCR_DISPATCH[provider](doc, pages, ocr_needed)
+    elif ocr_needed and skip_ocr:
+        logger.info(
+            "Pages %s need OCR but skipping (vision path) for %s",
+            ocr_needed,
+            filename or "unknown",
+        )
 
     doc.close()
 
@@ -150,6 +163,223 @@ def _ocr_pages_mistral(
             )
         except Exception:
             logger.exception("Mistral OCR failed for page %d", page_num)
+
+
+# ---------------------------------------------------------------------------
+# OpenAI Vision OCR
+# ---------------------------------------------------------------------------
+
+
+def _ocr_pages_openai(
+    doc: fitz.Document, pages: list[PageText], page_nums: list[int]
+) -> None:
+    """Use OpenAI GPT vision to extract text from scanned pages."""
+    if not settings.openai_api_key:
+        logger.warning("OpenAI API key not set, skipping OCR for scanned pages")
+        return
+
+    from openai import OpenAI
+
+    client = OpenAI(api_key=settings.openai_api_key)
+
+    for page_num in page_nums:
+        page = doc[page_num]
+        pixmap = page.get_pixmap(dpi=300)
+        image_bytes = pixmap.tobytes("png")
+
+        try:
+            b64 = base64.b64encode(image_bytes).decode("ascii")
+            response = client.chat.completions.create(
+                model=settings.openai_model,
+                max_tokens=4096,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    "Extract all text from this document image. "
+                                    "Return only the raw text, preserving the "
+                                    "original layout as much as possible. "
+                                    "Do not add commentary."
+                                ),
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{b64}",
+                                },
+                            },
+                        ],
+                    }
+                ],
+            )
+            text = response.choices[0].message.content or ""
+            raw = {
+                "model": response.model,
+                "usage": {
+                    "prompt_tokens": response.usage.prompt_tokens,
+                    "completion_tokens": response.usage.completion_tokens,
+                }
+                if response.usage
+                else None,
+            }
+            pages[page_num] = PageText(
+                page_num=page_num,
+                text=text.strip(),
+                used_ocr=True,
+                ocr_provider="openai",
+                raw_ocr_result=raw,
+            )
+        except Exception:
+            logger.exception("OpenAI OCR failed for page %d", page_num)
+
+
+# ---------------------------------------------------------------------------
+# Google Gemini Vision OCR
+# ---------------------------------------------------------------------------
+
+
+def _ocr_pages_google(
+    doc: fitz.Document, pages: list[PageText], page_nums: list[int]
+) -> None:
+    """Use Google Gemini vision to extract text from scanned pages."""
+    if not settings.google_api_key:
+        logger.warning("Google API key not set, skipping OCR for scanned pages")
+        return
+
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=settings.google_api_key)
+
+    for page_num in page_nums:
+        page = doc[page_num]
+        pixmap = page.get_pixmap(dpi=300)
+        image_bytes = pixmap.tobytes("png")
+
+        try:
+            image_part = types.Part.from_bytes(
+                data=image_bytes,
+                mime_type="image/png",
+            )
+            response = client.models.generate_content(
+                model=settings.google_model,
+                contents=[
+                    "Extract all text from this document image. "
+                    "Return only the raw text, preserving the "
+                    "original layout as much as possible. "
+                    "Do not add commentary.",
+                    image_part,
+                ],
+                config=types.GenerateContentConfig(
+                    max_output_tokens=4096,
+                ),
+            )
+            text = response.text or ""
+            raw = {
+                "model": settings.google_model,
+                "usage_metadata": response.usage_metadata.model_dump()
+                if response.usage_metadata
+                and hasattr(response.usage_metadata, "model_dump")
+                else None,
+            }
+            pages[page_num] = PageText(
+                page_num=page_num,
+                text=text.strip(),
+                used_ocr=True,
+                ocr_provider="google",
+                raw_ocr_result=raw,
+            )
+        except Exception:
+            logger.exception("Google Gemini OCR failed for page %d", page_num)
+
+
+# ---------------------------------------------------------------------------
+# Nanonets OCR2+
+# ---------------------------------------------------------------------------
+
+
+def _ocr_pages_nanonets(
+    doc: fitz.Document, pages: list[PageText], page_nums: list[int]
+) -> None:
+    """Use Nanonets OCR2+ API to extract text from scanned pages."""
+    if not settings.nanonets_api_key:
+        logger.warning("Nanonets API key not set, skipping OCR for scanned pages")
+        return
+
+    import httpx
+
+    client = httpx.Client(timeout=120.0)
+
+    for page_num in page_nums:
+        page = doc[page_num]
+        pixmap = page.get_pixmap(dpi=300)
+        image_bytes = pixmap.tobytes("png")
+
+        try:
+            response = client.post(
+                settings.nanonets_api_url,
+                headers={"Authorization": settings.nanonets_api_key},
+                files={
+                    "file": (
+                        f"page_{page_num}.png",
+                        image_bytes,
+                        "image/png",
+                    )
+                },
+                data={"output_type": "markdown"},
+            )
+            response.raise_for_status()
+            result = response.json()
+
+            # Extract text from Nanonets response
+            text = _nanonets_response_to_text(result)
+            pages[page_num] = PageText(
+                page_num=page_num,
+                text=text,
+                used_ocr=True,
+                ocr_provider="nanonets",
+                raw_ocr_result=result,
+            )
+        except Exception:
+            logger.exception("Nanonets OCR failed for page %d", page_num)
+
+    client.close()
+
+
+def _nanonets_response_to_text(response: dict) -> str:
+    """Extract plain text from a Nanonets OCR API response."""
+    # Try common response structures
+    if "markdown" in response:
+        return response["markdown"]
+    if "text" in response:
+        return response["text"]
+    if "result" in response:
+        result = response["result"]
+        if isinstance(result, str):
+            return result
+        if isinstance(result, list):
+            return "\n".join(
+                item.get("text", item.get("markdown", ""))
+                for item in result
+                if isinstance(item, dict)
+            )
+    return json.dumps(response, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
+# OCR provider dispatch
+# ---------------------------------------------------------------------------
+
+_OCR_DISPATCH = {
+    "textract": _ocr_pages_textract,
+    "mistral": _ocr_pages_mistral,
+    "openai": _ocr_pages_openai,
+    "google": _ocr_pages_google,
+    "nanonets": _ocr_pages_nanonets,
+}
 
 
 # ---------------------------------------------------------------------------

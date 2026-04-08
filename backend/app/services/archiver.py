@@ -1,3 +1,5 @@
+"""ZIP archive creation from renamed document files."""
+
 import io
 import zipfile
 
