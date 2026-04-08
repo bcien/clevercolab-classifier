@@ -45,9 +45,12 @@ def extract_text_from_pdf(
 
     doc.close()
 
-    # Persist raw OCR results to S3 for future reprocessing
+    # Persist raw OCR results for future reprocessing
     if ocr_needed and job_id:
-        _save_ocr_results_to_s3(pages, job_id, filename)
+        if settings.s3_ocr_results_bucket:
+            _save_ocr_results_to_s3(pages, job_id, filename)
+        elif settings.local_output_dir:
+            _save_ocr_results_local(pages, job_id, filename)
 
     return pages
 
@@ -191,3 +194,37 @@ def _save_ocr_results_to_s3(
             logger.info("Saved OCR result to s3://%s/%s", bucket, key)
         except Exception:
             logger.exception("Failed to save OCR result to S3: %s", key)
+
+
+def _save_ocr_results_local(
+    pages: list[PageText], job_id: str, filename: str | None
+) -> None:
+    """Save raw OCR results to local filesystem for development.
+
+    Structure: {local_output_dir}/{job_id}/ocr_results/{filename}/{provider}/page_{N}.json
+    """
+    from pathlib import Path
+
+    base = Path(settings.local_output_dir) / job_id / "ocr_results"
+    safe_filename = (filename or "unknown").replace("/", "_").replace("\\", "_")
+
+    for page in pages:
+        if not page.used_ocr or page.raw_ocr_result is None:
+            continue
+
+        provider = page.ocr_provider or "unknown"
+        out_dir = base / safe_filename / provider
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"page_{page.page_num:04d}.json"
+
+        body = (
+            json.dumps(page.raw_ocr_result, default=str, ensure_ascii=False)
+            if isinstance(page.raw_ocr_result, dict)
+            else json.dumps({"raw": page.raw_ocr_result}, ensure_ascii=False)
+        )
+
+        try:
+            out_path.write_text(body, encoding="utf-8")
+            logger.info("Saved OCR result to %s", out_path)
+        except Exception:
+            logger.exception("Failed to save OCR result locally: %s", out_path)

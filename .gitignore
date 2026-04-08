@@ -38,6 +38,9 @@ out/
 .aws-sam/
 samconfig.toml
 
+# Local dev output
+backend/output/
+
 # Misc
 *.zip
 *.log
