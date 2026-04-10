@@ -116,9 +116,9 @@ def _check_containers(
                 ))
                 verified.append(container)
 
-    # Recover containers the LLM missed
-    llm_set = {c.replace(" ", "").replace("-", "").upper() for c in data.container_numbers}
-    missed = text_containers - llm_set
+    # Recover containers the LLM missed (use verified list, not originals)
+    verified_set = set(verified)
+    missed = text_containers - verified_set
     for container in sorted(missed):
         logger.info("Recovered missed container %s from raw text in %s", container, source)
         verified.append(container)
@@ -141,16 +141,19 @@ def _check_containers(
 def _check_transport_ids(
     data: ExtractedData, raw_text: str, source: str
 ) -> list[Alert]:
-    """Validate transport IDs against raw text."""
+    """Validate transport IDs against raw text and patch corrections in-place."""
     alerts: list[Alert] = []
     text_ids = set(_TRANSPORT_ID_RE.findall(raw_text))
 
     # Normalize for comparison
     text_ids_upper = {tid.upper().strip() for tid in text_ids}
 
+    verified: list[str] = []
     for tid in data.transport_ids:
         tid_upper = tid.upper().strip()
-        if not _value_in_text(tid_upper, raw_text):
+        if _value_in_text(tid_upper, raw_text):
+            verified.append(tid)
+        else:
             # Check if a close match exists in regex results
             match = _find_closest(tid_upper, text_ids_upper)
             if match:
@@ -162,6 +165,7 @@ def _check_transport_ids(
                         f"a '{match}' según texto PDF"
                     ),
                 ))
+                verified.append(match)
             else:
                 alerts.append(Alert(
                     severity=AlertSeverity.WARNING,
@@ -171,6 +175,11 @@ def _check_transport_ids(
                         f"no aparece en el texto del PDF"
                     ),
                 ))
+                verified.append(tid)
+
+    # Patch in-place with validated list
+    if verified != data.transport_ids:
+        data.transport_ids = verified
 
     return alerts
 

@@ -14,6 +14,7 @@ from app.models.schemas import (
     AnalyzedSegment,
     ClassifiedDocument,
     DocumentSegment,
+    ExtractedData,
     JobInput,
     JobResult,
     JobStage,
@@ -60,6 +61,10 @@ def process_job(
     renamed_files: dict[str, bytes] = {}
     rename_map: dict[str, str] = {}
 
+    # Disambiguate duplicate filenames across uploaded PDFs
+    filename_counts: Counter[str] = Counter(p.filename for p in job_input.pdfs)
+    filename_seen: Counter[str] = Counter()
+
     for i, pdf in enumerate(job_input.pdfs):
         file_progress = i / len(job_input.pdfs)
 
@@ -98,13 +103,6 @@ def process_job(
                 )
             ]
 
-        # Report EXTRACTING_DATA as done (folded into the classify call)
-        _progress(
-            JobStage.EXTRACTING_DATA,
-            file_progress,
-            f"Datos extraídos de {pdf.filename}",
-        )
-
         # --- Split PDF ---
         _progress(
             JobStage.SPLITTING, file_progress, f"Separando {pdf.filename}"
@@ -123,10 +121,15 @@ def process_job(
         # --- Build ClassifiedDocuments ---
         for seg, seg_pdf_bytes in zip(analyzed, split_pdfs):
             seg_pages = pages[seg.start_page : seg.end_page + 1]
+            # Build a unique source name for this segment
+            base_name = pdf.filename
+            if filename_counts[pdf.filename] > 1:
+                occurrence = filename_seen[pdf.filename]
+                base_name = f"{pdf.filename}({occurrence + 1})"
             source_name = (
-                f"{pdf.filename}[p{seg.start_page + 1}-{seg.end_page + 1}]"
+                f"{base_name}[p{seg.start_page + 1}-{seg.end_page + 1}]"
                 if len(analyzed) > 1
-                else pdf.filename
+                else base_name
             )
 
             classified = ClassifiedDocument(
@@ -140,6 +143,8 @@ def process_job(
             )
             all_classified.append(classified)
             all_split_pdf_bytes.append(seg_pdf_bytes)
+
+        filename_seen[pdf.filename] += 1
 
     # --- Post-LLM validation against PyMuPDF raw text ---
     _progress(JobStage.VALIDATING, 0.75, "Verificando datos contra texto PDF")
@@ -187,7 +192,5 @@ def _find_primary_transport_id(
     return None
 
 
-def _empty_extracted_data():
-    from app.models.schemas import ExtractedData
-
+def _empty_extracted_data() -> ExtractedData:
     return ExtractedData()

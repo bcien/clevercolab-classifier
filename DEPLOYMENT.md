@@ -398,10 +398,9 @@ In Amplify Console → App settings → Environment variables:
 
 | Variable | Value |
 |----------|-------|
-| `NEXT_PUBLIC_API_UPLOAD_URL` | Upload Lambda Function URL |
-| `NEXT_PUBLIC_API_STATUS_URL` | Status Lambda Function URL |
-| `NEXT_PUBLIC_API_DOWNLOAD_URL` | Download Lambda Function URL |
-| `NEXT_PUBLIC_API_DASHBOARD_URL` | Dashboard Lambda Function URL |
+| `NEXT_PUBLIC_API_URL` | Base URL for the backend API (e.g., API Gateway URL or single Function URL that routes all `/api/*` paths) |
+
+> The frontend uses a single `NEXT_PUBLIC_API_URL` base for all endpoints (`/api/upload`, `/api/jobs/{id}`, etc.). In production you'll need an API Gateway or similar reverse proxy in front of the individual Lambda Function URLs to provide a unified base URL.
 
 ### Custom domain (optional)
 
@@ -545,7 +544,7 @@ Assumes **low-medium usage**: ~500 document batches/month, ~10 pages average per
 | **Mistral OCR** (if used instead) | $2.00 / 1,000 pages | **$2.00** | Alternative to Textract. Set via `OCR_PROVIDER` env var. |
 | **LLM API (classify+extract)** | ~$0.003/1K input + $0.015/1K output tokens | **$5–10** | 1 combined classify+extract call per PDF (~3K input tokens, ~800 output tokens). 500 calls ≈ 1.5M input + 400K output tokens. Previously required separate calls; merged into one. |
 | **SQS** | $0.40 / 1M requests | < $0.01 | Negligible at this volume. 1M requests/month free tier. |
-| **Secrets Manager** | $0.40/secret/month + $0.05/10K API calls | ~$1 | 2 secrets (Anthropic + optional Mistral). Cached in Lambda memory between invocations. |
+| **Secrets Manager** | $0.40/secret/month + $0.05/10K API calls | ~$1–2 | 1–5 secrets depending on providers configured. Cached in Lambda memory between invocations. |
 
 **Variable subtotal: ~$15–30/month** at 500 batches
 
@@ -561,10 +560,12 @@ Assumes **low-medium usage**: ~500 document batches/month, ~10 pages average per
 ### Cost optimization tips
 
 - **PyMuPDF first**: The two-tier OCR strategy saves ~80% on OCR costs since most logistics docs have text layers.
+- **Vision path**: Setting `OCR_PROVIDER == LLM_PROVIDER` (anthropic, openai, or google) merges OCR + classify + extract into one LLM call, eliminating separate OCR costs for scanned pages.
+- **Merged classify+extract**: A single LLM call handles both classification and data extraction, halving API costs compared to separate calls.
 - **Free Tier**: AWS Free Tier covers most fixed costs for 12 months (Lambda 400K GB-s, DynamoDB 25 WCU/RCU, S3 5 GB, 1M SQS requests).
 - **S3 lifecycle rules**: 24h auto-purge on input/output buckets prevents storage cost accumulation.
 - **DynamoDB TTL**: Auto-deletes expired job records, keeping table small.
-- **Claude prompt caching**: If Anthropic prompt caching is enabled, the classification system prompt (~1.5K tokens) is cached across calls, reducing input token costs by ~90% for the cached portion.
-- **Reserved Textract pricing**: Not available, but batching pages reduces API call overhead.
+- **Prompt caching**: If using Anthropic with prompt caching enabled, the system prompt (~1.5K tokens) is cached across calls, reducing input token costs by ~90% for the cached portion.
+- **Post-validation is free**: PyMuPDF-based validation runs locally with no API cost, catching LLM errors before they reach users.
 
 > **Note**: Prices based on `us-east-1` region as of early 2025. Check [AWS Pricing](https://aws.amazon.com/pricing/) for current rates. Claude API pricing at [Anthropic Pricing](https://www.anthropic.com/pricing).

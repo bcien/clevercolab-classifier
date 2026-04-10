@@ -89,10 +89,10 @@ Copy `.env.example` to `.env` and set:
 
 ## Architecture
 
-- **Pipeline pattern (ports & adapters)**: `pipeline.process_job()` accepts `JobInput` (PDF bytes) and returns `JobResult` (report + ZIP bytes). It is transport-agnostic — callers (Lambda, CLI, local server) handle I/O.
-- **Unified LLM abstraction** (`llm.py`): translates between Anthropic tool_use, OpenAI function-calling, Google Gemini function declarations, and Nanonets schema-based REST. All providers use the same tool schema.
+- **Pipeline pattern (ports & adapters)**: `pipeline.process_job()` accepts `JobInput` (PDF bytes) and returns `JobResult` (report + ZIP bytes). It is transport-agnostic — callers (Lambda, CLI, local server) handle I/O. Duplicate uploaded filenames are automatically disambiguated.
+- **Unified LLM abstraction** (`llm.py`): translates between Anthropic tool_use, OpenAI function-calling, Google Gemini function declarations, and Nanonets schema-based REST. All providers use the same tool schema, with enums derived from `DocumentType` (single source of truth).
 - **Two processing paths**: text path (OCR → classify+extract) and vision path (classify+extract+OCR in one call for scanned pages).
-- **Post-LLM validation**: PyMuPDF raw text is used as ground truth to verify, correct, and recover extracted values.
+- **Post-LLM validation**: PyMuPDF raw text is used as ground truth to verify, correct, and recover extracted values via regex + Levenshtein fuzzy matching. Patches corrections in-place before consistency checks.
 - **OCR results are preserved**: raw JSON responses saved to S3 or local filesystem for future reprocessing.
 
 ## Local development

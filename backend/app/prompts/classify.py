@@ -1,3 +1,5 @@
+from app.models.document import DocumentType
+
 CLASSIFY_AND_SPLIT_SYSTEM = """\
 You are an expert document analyst specializing in international trade \
 and Chilean customs (Agencia de Aduanas) documentation.
@@ -66,17 +68,7 @@ CLASSIFY_AND_SPLIT_TOOL = {
                         },
                         "doc_type": {
                             "type": "string",
-                            "enum": [
-                                "transport_document",
-                                "commercial_invoice",
-                                "packing_list",
-                                "certificate_of_origin",
-                                "insurance_certificate",
-                                "vb_certificate",
-                                "mandato",
-                                "declaracion_jurada",
-                                "other",
-                            ],
+                            "enum": [dt.value for dt in DocumentType],
                         },
                         "confidence": {
                             "type": "number",

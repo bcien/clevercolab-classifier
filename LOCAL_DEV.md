@@ -8,9 +8,17 @@ How to run and test the classifier locally without AWS infrastructure.
 
 - Python 3.12+
 - Node.js 20+
-- An Anthropic API key (`ANTHROPIC_API_KEY`)
-- AWS credentials (only if using `OCR_PROVIDER=textract` with scanned PDFs)
-- Mistral API key (only if using `OCR_PROVIDER=mistral` with scanned PDFs)
+- At least one LLM provider API key (see table below)
+- AWS credentials (only if using `OCR_PROVIDER=textract`)
+
+| Provider | Key needed | Used for |
+|----------|-----------|----------|
+| Anthropic | `ANTHROPIC_API_KEY` | LLM (default) |
+| OpenAI | `OPENAI_API_KEY` | LLM and/or OCR |
+| Google | `GOOGLE_API_KEY` | LLM and/or OCR |
+| Nanonets | `NANONETS_API_KEY` | LLM and/or OCR |
+| Mistral | `MISTRAL_API_KEY` | OCR only |
+| AWS | credentials via `aws configure` | OCR (Textract, default) |
 
 > Text-layer PDFs (most digital logistics documents) don't need OCR — PyMuPDF extracts text for free. OCR is only triggered for scanned/image-only pages.
 
@@ -35,11 +43,16 @@ cp ../.env.example .env
 Edit `backend/.env`:
 
 ```env
+# LLM provider for classification + extraction
+LLM_PROVIDER=anthropic           # anthropic | openai | google | nanonets
 ANTHROPIC_API_KEY=sk-ant-your-key-here
+# OPENAI_API_KEY=sk-...          # if LLM_PROVIDER=openai or OCR_PROVIDER=openai
+# GOOGLE_API_KEY=...             # if LLM_PROVIDER=google or OCR_PROVIDER=google
+# NANONETS_API_KEY=...           # if LLM_PROVIDER=nanonets or OCR_PROVIDER=nanonets
 
-# OCR fallback for scanned pages (choose one)
-OCR_PROVIDER=textract            # requires AWS credentials
-# OCR_PROVIDER=mistral           # requires MISTRAL_API_KEY
+# OCR fallback for scanned pages
+OCR_PROVIDER=textract            # textract | mistral | openai | google | nanonets
+# MISTRAL_API_KEY=...            # if OCR_PROVIDER=mistral
 
 # Leave empty to skip S3 — OCR results save locally instead
 S3_OCR_RESULTS_BUCKET=
@@ -47,6 +60,8 @@ S3_OCR_RESULTS_BUCKET=
 # Local output directory (relative to backend/)
 LOCAL_OUTPUT_DIR=output
 ```
+
+**Vision path shortcut**: If you set `OCR_PROVIDER` and `LLM_PROVIDER` to the same vision-capable provider (`anthropic`, `openai`, or `google`), the pipeline merges OCR + classify + extract into a single LLM call — faster and cheaper for scanned pages.
 
 ### Start the server
 
@@ -102,13 +117,13 @@ backend/output/a1b2c3d4e5f6/
     ...
   ocr_results/                         # Only if OCR was triggered
     original.pdf/
-      textract/
-        page_0001.json                 # Raw Textract/Mistral response
+      textract/                        # or mistral/, openai/, google/, nanonets/
+        page_0001.json                 # Raw OCR provider response
 ```
 
 - **`report.json`** — machine-readable report with all classified documents, extracted data, alerts, and missing document types.
 - **`files/`** — each PDF renamed as `[TransportID]_[DocType].pdf` for easy manual review.
-- **`ocr_results/`** — raw OCR provider responses, preserved for future reprocessing.
+- **`ocr_results/`** — raw OCR provider responses (Textract, Mistral, OpenAI, Google, or Nanonets), preserved for future reprocessing.
 
 ---
 
@@ -156,8 +171,12 @@ The processing pipeline (`pipeline.process_job()`) is identical in both environm
 
 ## Troubleshooting
 
-**"Textract OCR failed"** — You need AWS credentials configured (`aws configure`) or switch to `OCR_PROVIDER=mistral`. Text-layer PDFs work without any OCR provider.
+**"Textract OCR failed"** — You need AWS credentials configured (`aws configure`) or switch to a different `OCR_PROVIDER` (e.g., `openai`, `google`, `mistral`, `nanonets`). Text-layer PDFs work without any OCR provider.
+
+**"API key not set, skipping OCR"** — The configured `OCR_PROVIDER` requires an API key that isn't set in `.env`. Either add the key or switch to a different provider.
 
 **Frontend can't connect to backend** — Make sure both servers are running and CORS is enabled (the local server allows `localhost:3000` by default).
 
-**Slow processing** — Classification and extraction require Claude API calls (~3–5s each). Total time depends on the number of documents in the batch.
+**Slow processing** — The classify+extract LLM call takes ~3–8s depending on the provider and document size. Using the vision path (matching `LLM_PROVIDER` and `OCR_PROVIDER`) reduces total time for scanned documents by eliminating a separate OCR step.
+
+**Duplicate filenames** — If you upload multiple PDFs with the same filename, the pipeline automatically disambiguates them with a `(N)` suffix in the report.

@@ -4,6 +4,8 @@ Merges the separate classify and extract steps into a single LLM call,
 cutting API costs and latency in half for the core analysis pipeline.
 """
 
+from app.models.document import DocumentType
+
 CLASSIFY_EXTRACT_SYSTEM = """\
 You are an expert document analyst specializing in international trade \
 and Chilean customs (Agencia de Aduanas) documentation.
@@ -73,17 +75,7 @@ and extract reference identifiers and metadata from each.
 {pages_text}"""
 
 
-_DOC_TYPE_ENUM = [
-    "transport_document",
-    "commercial_invoice",
-    "packing_list",
-    "certificate_of_origin",
-    "insurance_certificate",
-    "vb_certificate",
-    "mandato",
-    "declaracion_jurada",
-    "other",
-]
+_DOC_TYPE_ENUM = [dt.value for dt in DocumentType]
 
 CLASSIFY_EXTRACT_TOOL = {
     "name": "report_analyzed_documents",

@@ -301,6 +301,18 @@ def _ocr_pages_google(
 # ---------------------------------------------------------------------------
 
 
+_nanonets_httpx_client = None
+
+
+def _get_nanonets_httpx_client():
+    global _nanonets_httpx_client  # noqa: PLW0603
+    if _nanonets_httpx_client is None:
+        import httpx
+
+        _nanonets_httpx_client = httpx.Client(timeout=120.0)
+    return _nanonets_httpx_client
+
+
 def _ocr_pages_nanonets(
     doc: fitz.Document, pages: list[PageText], page_nums: list[int]
 ) -> None:
@@ -309,9 +321,7 @@ def _ocr_pages_nanonets(
         logger.warning("Nanonets API key not set, skipping OCR for scanned pages")
         return
 
-    import httpx
-
-    client = httpx.Client(timeout=120.0)
+    client = _get_nanonets_httpx_client()
 
     for page_num in page_nums:
         page = doc[page_num]
@@ -345,8 +355,6 @@ def _ocr_pages_nanonets(
             )
         except Exception:
             logger.exception("Nanonets OCR failed for page %d", page_num)
-
-    client.close()
 
 
 def _nanonets_response_to_text(response: dict) -> str:
